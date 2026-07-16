@@ -176,7 +176,7 @@ LIMIT 5;
 
 ### Web UI
 
-Открой http://localhost:15672 → логин `railway`, пароль `railway_secret`
+Перейти на http://localhost:15672 → логин `railway`, пароль `railway_secret`
 
 ### Основные разделы
 
