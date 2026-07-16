@@ -378,7 +378,7 @@ GET /api/v1/tasks?page=0&size=10&status=COMPLETED&sort=createdAt,desc&createdFro
 
 ## Симуляция работы микросервисов (ручная отладка полного цикла)
 
-Когда Document Service, AI Service и Assembler Service ещё не готовы, можно вручную провести задачу через весь жизненный цикл, публикуя события в RabbitMQ Management.
+Предположим что Document Service, AI Service и Assembler Service ещё не готовы, можно вручную провести задачу через весь жизненный цикл, публикуя события в RabbitMQ Management для наглядности.
 
 ### Шаг 1: Получить taskId
 
