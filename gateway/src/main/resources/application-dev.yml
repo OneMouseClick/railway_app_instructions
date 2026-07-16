@@ -1,0 +1,108 @@
+spring:
+  datasource:
+    url: jdbc:postgresql://localhost:5432/railway_gateway
+    username: railway
+    password: railway_secret
+    driver-class-name: org.postgresql.Driver
+    hikari:
+      maximum-pool-size: 10
+      minimum-idle: 5
+      idle-timeout: 30000
+      connection-timeout: 20000
+      max-lifetime: 1800000
+
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    show-sql: false
+    open-in-view: false
+    properties:
+      hibernate:
+        format_sql: true
+        jdbc:
+          time_zone: UTC
+        types:
+          print:
+            banner: false
+        physical_naming_strategy: org.hibernate.boot.model.naming.CamelCaseToUnderscoresNamingStrategy
+        implicit_naming_strategy: org.springframework.boot.orm.jpa.hibernate.SpringImplicitNamingStrategy
+
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+    baseline-on-migrate: true
+    validate-on-migrate: true
+
+  rabbitmq:
+    host: localhost
+    port: 5672
+    username: railway
+    password: railway_secret
+    virtual-host: /
+
+  security:
+    user:
+      name: admin
+      password: admin123
+
+  servlet:
+    multipart:
+      max-file-size: 100MB
+      max-request-size: 100MB
+
+minio:
+  endpoint: http://localhost:9000
+  access-key: minioadmin
+  secret-key: minioadmin
+  secure: false
+  connection-timeout: 60000
+  read-timeout: 60000
+  write-timeout: 60000
+  max-idle-connections: 10
+  keep-alive-duration: 30000
+
+rabbitmq:
+  host: localhost
+  port: 5672
+  username: railway
+  password: railway_secret
+  virtual-host: /
+  listener:
+    concurrency: 1
+    max-concurrency: 3
+    prefetch: 10
+  exchange:
+    document: document.exchange
+    task: task.exchange
+    dead-letter: dead.letter.exchange
+  queue:
+    document-parse: document.parse.queue
+    ai-analyze: ai.analyze.queue
+    assemble-document: assemble.document.queue
+    task-status: task.status.queue
+    dead-letter: dead.letter.queue
+    retry: retry.queue
+  routing-key:
+    document-parse: document.parse
+    ai-analyze: ai.analyze
+    assemble-document: assemble.document
+    task-status: task.status
+    dead-letter: dead.letter
+    retry: retry
+  dead-letter:
+    ttl: 60000
+  retry:
+    max-attempts: 3
+    initial-interval: 1000
+    multiplier: 2.0
+
+jwt:
+  secret: c2VjdXJlLXNlY3JldC1rZXktZm9yLXJhaWx3YXktYWktcGxhdGZvcm0tZ2F0ZXdheS1zZXJ2aWNlLTIwMjY=
+  access-token-expiration: 900000
+  refresh-token-expiration: 604800000
+
+logging:
+  level:
+    com.railway.gateway: DEBUG
+    org.springframework.amqp: DEBUG
+    io.minio: DEBUG
