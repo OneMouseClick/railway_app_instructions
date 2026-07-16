@@ -29,7 +29,7 @@
 ### 2. Сборка и запуск
 
 ```powershell
-# Перейти в корень проекта
+# Перейти в корень проекта(например)
 cd M:\railway-gateway
 
 # Собрать JAR
@@ -37,6 +37,7 @@ mvn clean package -DskipTests -pl gateway -am
 
 # Запустить все контейнеры (PostgreSQL, RabbitMQ, MinIO, Gateway)
 docker-compose -f docker-compose.dev.yml up -d --build
+```
 
 ### 3. Проверка, что всё работает
 
