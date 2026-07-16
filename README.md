@@ -1,4 +1,3 @@
-```markdown
 # Railway AI Platform — Gateway Service
 
 Центральный микросервис платформы генерации технологических инструкций для железнодорожных станций.
@@ -38,7 +37,6 @@ mvn clean package -DskipTests -pl gateway -am
 
 # Запустить все контейнеры (PostgreSQL, RabbitMQ, MinIO, Gateway)
 docker-compose -f docker-compose.dev.yml up -d --build
-```
 
 ### 3. Проверка, что всё работает
 
