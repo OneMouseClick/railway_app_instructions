@@ -98,11 +98,9 @@ docker-compose -f docker-compose.dev.yml up -d --build
 
 ## Подключение к PostgreSQL
 
-### Вариант 1: DBeaver (рекомендуется)
+### Вариант 1: DBeaver
 
-1. Скачай и установи [DBeaver](https://dbeaver.io/) (бесплатный)
-2. Нажми **Новое соединение** → выбери **PostgreSQL**
-3. Заполни поля:
+Поля для подключения:
 
 | Поле | Значение |
 |------|----------|
@@ -111,9 +109,6 @@ docker-compose -f docker-compose.dev.yml up -d --build
 | Database | `railway_gateway` |
 | Username | `railway` |
 | Password | `railway_secret` |
-
-4. Нажми **Test Connection** → должно быть "Connected"
-5. Нажми **Finish**
 
 **Основные таблицы:**
 - `users` — зарегистрированные пользователи
