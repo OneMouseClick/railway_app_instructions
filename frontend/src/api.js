@@ -16,8 +16,13 @@ export function hasSession() {
 }
 
 export function saveSession(session) {
-  localStorage.setItem(ACCESS_TOKEN_KEY, session.accessToken)
-  localStorage.setItem(REFRESH_TOKEN_KEY, session.refreshToken)
+  if (session.accessToken) {
+    localStorage.setItem(ACCESS_TOKEN_KEY, session.accessToken)
+  }
+
+  if (session.refreshToken) {
+    localStorage.setItem(REFRESH_TOKEN_KEY, session.refreshToken)
+  }
 
   const expiresIn = Number(session.expiresIn) || 900000
   localStorage.setItem(EXPIRES_AT_KEY, String(Date.now() + expiresIn))
