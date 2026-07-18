@@ -1,4 +1,5 @@
 const API_URL = (import.meta.env.VITE_API_URL || '/api').replace(/\/$/, '')
+
 const ACCESS_TOKEN_KEY = 'railway-access-token'
 const REFRESH_TOKEN_KEY = 'railway-refresh-token'
 const EXPIRES_AT_KEY = 'railway-token-expires-at'
@@ -16,15 +17,17 @@ export function hasSession() {
 }
 
 export function saveSession(session) {
-  if (session.accessToken) {
+  if (session?.accessToken) {
     localStorage.setItem(ACCESS_TOKEN_KEY, session.accessToken)
   }
 
-  if (session.refreshToken) {
+  // При обновлении сессии Gateway может вернуть только новый accessToken.
+  // В этом случае ранее выданный refreshToken сохраняется.
+  if (session?.refreshToken) {
     localStorage.setItem(REFRESH_TOKEN_KEY, session.refreshToken)
   }
 
-  const expiresIn = Number(session.expiresIn) || 900000
+  const expiresIn = Number(session?.expiresIn) || 900000
   localStorage.setItem(EXPIRES_AT_KEY, String(Date.now() + expiresIn))
 }
 
@@ -36,26 +39,33 @@ export function clearSession() {
 
 async function parseError(response) {
   let message = `Ошибка запроса: ${response.status}`
+  let payload = null
 
   try {
-    const data = await response.json()
-    message = data.message || data.error || data.detail || data.title || message
-
-    if (data.errors && typeof data.errors === 'object') {
-      const validationMessage = Object.values(data.errors).flat().join('. ')
-      if (validationMessage) message = validationMessage
+    const raw = await response.text()
+    if (raw) {
+      try {
+        payload = JSON.parse(raw)
+      } catch {
+        message = raw
+      }
     }
   } catch {
-    try {
-      const text = await response.text()
-      if (text) message = text
-    } catch {
-      // Оставляем стандартное сообщение.
+    // Используем стандартное сообщение.
+  }
+
+  if (payload) {
+    message = payload.message || payload.error || payload.detail || payload.title || message
+
+    if (payload.errors && typeof payload.errors === 'object') {
+      const validationMessage = Object.values(payload.errors).flat().join('. ')
+      if (validationMessage) message = validationMessage
     }
   }
 
   const error = new Error(message)
   error.status = response.status
+  error.data = payload
   throw error
 }
 
@@ -80,7 +90,13 @@ async function refreshSession() {
 }
 
 async function apiRequest(path, options = {}, retryAfterRefresh = true) {
-  const { auth = true, responseType = 'json', headers: customHeaders, ...fetchOptions } = options
+  const {
+    auth = true,
+    responseType = 'json',
+    headers: customHeaders,
+    ...fetchOptions
+  } = options
+
   const headers = new Headers(customHeaders || {})
   const bodyIsFormData = fetchOptions.body instanceof FormData
 
@@ -89,14 +105,19 @@ async function apiRequest(path, options = {}, retryAfterRefresh = true) {
   }
 
   if (auth) {
-    const token = getAccessToken()
-    if (token) headers.set('Authorization', `Bearer ${token}`)
+    const accessToken = getAccessToken()
+    if (accessToken) headers.set('Authorization', `Bearer ${accessToken}`)
   }
 
-  const response = await fetch(`${API_URL}${path}`, {
-    ...fetchOptions,
-    headers,
-  })
+  let response
+  try {
+    response = await fetch(`${API_URL}${path}`, {
+      ...fetchOptions,
+      headers,
+    })
+  } catch {
+    throw new Error('Gateway недоступен. Проверьте, что backend запущен.')
+  }
 
   if (response.status === 401 && auth && retryAfterRefresh && getRefreshToken()) {
     try {
@@ -116,6 +137,7 @@ async function apiRequest(path, options = {}, retryAfterRefresh = true) {
     return {
       blob: await response.blob(),
       contentDisposition: response.headers.get('content-disposition'),
+      contentType: response.headers.get('content-type'),
     }
   }
 
@@ -154,33 +176,24 @@ export async function logout() {
         body: JSON.stringify({ refreshToken }),
       })
     }
-  } catch {
-    // Даже если Gateway недоступен, локальную сессию нужно завершить.
   } finally {
     clearSession()
   }
 }
 
-export async function getTasks() {
-  const data = await apiRequest('/v1/tasks?page=0&size=50&sort=createdAt,desc')
+export async function getTasks({ page = 0, size = 100 } = {}) {
+  const data = await apiRequest(`/v1/tasks?page=${page}&size=${size}&sort=createdAt,desc`)
   if (Array.isArray(data)) return data
   return data?.content || data?.items || data?.tasks || []
 }
 
-export function getTask(id) {
-  return apiRequest(`/v1/tasks/${id}`)
-}
-
 export function getTaskStatus(id) {
-  return apiRequest(`/v1/tasks/${id}/status`)
+  return apiRequest(`/v1/tasks/${encodeURIComponent(id)}/status`)
 }
 
 export function createTask({ file, station }) {
   const formData = new FormData()
   formData.append('file', file)
-
-  // Текущий Gateway принимает только file. Дополнительное поле не ломает
-  // multipart-запрос и уже готово к будущей поддержке station на бэкенде.
   formData.append('station', station)
 
   return apiRequest('/v1/tasks', {
@@ -190,26 +203,18 @@ export function createTask({ file, station }) {
 }
 
 export function deleteTask(id) {
-  return apiRequest(`/v1/tasks/${id}`, { method: 'DELETE' })
+  return apiRequest(`/v1/tasks/${encodeURIComponent(id)}`, {
+    method: 'DELETE',
+  })
 }
 
-export async function downloadTask(id, fallbackName = 'instruction.pdf') {
-  const { blob, contentDisposition } = await apiRequest(`/v1/tasks/${id}/download`, {
-    responseType: 'blob',
+export function getTaskContent(id) {
+  return apiRequest(`/v1/tasks/${encodeURIComponent(id)}/content`)
+}
+
+export function saveTaskContent(id, payload) {
+  return apiRequest(`/v1/tasks/${encodeURIComponent(id)}/content`, {
+    method: 'PUT',
+    body: JSON.stringify(payload),
   })
-
-  const encodedName = contentDisposition?.match(/filename\*=UTF-8''([^;]+)/i)?.[1]
-  const simpleName = contentDisposition?.match(/filename="?([^";]+)"?/i)?.[1]
-  const fileName = encodedName
-    ? decodeURIComponent(encodedName)
-    : simpleName || fallbackName
-
-  const url = URL.createObjectURL(blob)
-  const link = document.createElement('a')
-  link.href = url
-  link.download = fileName
-  document.body.appendChild(link)
-  link.click()
-  link.remove()
-  URL.revokeObjectURL(url)
 }

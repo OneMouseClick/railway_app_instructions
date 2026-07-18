@@ -2,25 +2,31 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   createTask,
   deleteTask,
-  downloadTask,
+  getTaskContent,
   getTaskStatus,
   getTasks,
   hasSession,
   login,
   logout,
   register,
+  saveTaskContent,
 } from './api'
-import { PROCESSING_STEPS, STATIONS, STATUS_META, TERMINAL_STATUSES } from './constants'
+import {
+  ACTIVE_STATUSES,
+  PROCESSING_STEPS,
+  STATIONS,
+  STATUS_META,
+} from './constants'
+import { exportInstructionDocx, exportInstructionPdf } from './documentExport'
 
 const PROFILE_KEY = 'railway-user-profile'
-const STATION_MAP_KEY = 'railway-task-stations'
+const POLLING_INTERVAL_MS = 3000
 
-function readJson(key, fallback) {
+function readProfile() {
   try {
-    const value = localStorage.getItem(key)
-    return value ? JSON.parse(value) : fallback
+    return JSON.parse(localStorage.getItem(PROFILE_KEY) || '{}')
   } catch {
-    return fallback
+    return {}
   }
 }
 
@@ -31,7 +37,7 @@ function saveProfile(profile) {
 function formatDate(value) {
   if (!value) return 'Дата не указана'
   const date = new Date(value)
-  if (Number.isNaN(date.getTime())) return value
+  if (Number.isNaN(date.getTime())) return String(value)
 
   return new Intl.DateTimeFormat('ru-RU', {
     day: '2-digit',
@@ -41,25 +47,71 @@ function formatDate(value) {
   }).format(date)
 }
 
-function getTaskFileName(task) {
-  return task.originalFileName || task.fileName || task.filename || 'Технический паспорт'
-}
-
 function getTaskId(task) {
-  return task.id || task.taskId
+  return task?.id || task?.taskId
 }
 
 function getTaskStatusValue(task) {
-  return task.status || 'CREATED'
+  return task?.status || 'CREATED'
 }
 
-function taskTitle(task) {
-  return getTaskFileName(task).replace(/\.[^.]+$/, '')
+function getTaskFileName(task) {
+  return task?.originalFileName || task?.fileName || task?.filename || 'Технический паспорт'
 }
 
-function normalizeStatusResponse(previousTask, response) {
-  if (typeof response === 'string') return { ...previousTask, status: response }
-  return { ...previousTask, ...response }
+function getTaskStation(task) {
+  return task?.station || task?.stationName || ''
+}
+
+function getTaskTitle(task, instruction) {
+  return (
+    instruction?.company ||
+    task?.company ||
+    task?.ownerName ||
+    getTaskFileName(task).replace(/\.[^.]+$/, '')
+  )
+}
+
+function normalizeStatusResponse(task, response) {
+  if (typeof response === 'string') return { ...task, status: response }
+  return { ...task, ...(response || {}) }
+}
+
+function normalizeInstructionResponse(response, task) {
+  if (typeof response === 'string') {
+    return {
+      taskId: getTaskId(task),
+      content: response,
+      station: getTaskStation(task),
+    }
+  }
+
+  const nested = response?.instruction || response?.data || response?.result || {}
+  const content =
+    response?.content ||
+    response?.instructionText ||
+    response?.text ||
+    nested?.content ||
+    nested?.instructionText ||
+    nested?.text
+
+  if (typeof content !== 'string') {
+    throw new Error('Gateway не вернул текст инструкции в поле content.')
+  }
+
+  return {
+    taskId: getTaskId(task),
+    company: '',
+    station: getTaskStation(task),
+    pathNumber: '',
+    locomotives: '',
+    connection: '',
+    boundary: '',
+    safety: '',
+    ...nested,
+    ...response,
+    content,
+  }
 }
 
 function TrashIcon() {
@@ -93,22 +145,28 @@ function AuthPage({ onAuthenticated }) {
 
     try {
       if (mode === 'login') {
-        await login({ username: form.username.trim(), password: form.password })
-        onAuthenticated({ username: form.username.trim() })
-      } else {
-        await register({
+        await login({
           username: form.username.trim(),
-          email: form.email.trim(),
           password: form.password,
-          firstName: form.firstName.trim(),
-          lastName: form.lastName.trim(),
         })
-        onAuthenticated({
-          username: form.username.trim(),
-          firstName: form.firstName.trim(),
-          lastName: form.lastName.trim(),
-        })
+
+        onAuthenticated({ username: form.username.trim() })
+        return
       }
+
+      await register({
+        username: form.username.trim(),
+        email: form.email.trim(),
+        password: form.password,
+        firstName: form.firstName.trim(),
+        lastName: form.lastName.trim(),
+      })
+
+      onAuthenticated({
+        username: form.username.trim(),
+        firstName: form.firstName.trim(),
+        lastName: form.lastName.trim(),
+      })
     } catch (requestError) {
       setError(requestError.message || 'Не удалось выполнить запрос.')
     } finally {
@@ -127,7 +185,7 @@ function AuthPage({ onAuthenticated }) {
           </div>
         </div>
 
-        <div className="auth-tabs" role="tablist" aria-label="Авторизация">
+        <div className="auth-tabs">
           <button
             type="button"
             className={mode === 'login' ? 'auth-tab-active' : ''}
@@ -220,6 +278,7 @@ function AuthPage({ onAuthenticated }) {
               onChange={updateField}
               autoComplete={mode === 'login' ? 'current-password' : 'new-password'}
               minLength={8}
+              maxLength={100}
               required
             />
           </label>
@@ -227,11 +286,7 @@ function AuthPage({ onAuthenticated }) {
           {error && <div className="form-error">{error}</div>}
 
           <button type="submit" className="primary-button wide-button" disabled={submitting}>
-            {submitting
-              ? 'Отправка…'
-              : mode === 'login'
-                ? 'Войти'
-                : 'Зарегистрироваться'}
+            {submitting ? 'Отправка…' : mode === 'login' ? 'Войти' : 'Зарегистрироваться'}
           </button>
         </form>
       </section>
@@ -245,11 +300,13 @@ function UploadCard({ file, setFile }) {
 
   function validateAndSet(nextFile) {
     if (!nextFile) return
+
     const extension = nextFile.name.split('.').pop()?.toLowerCase()
     if (!['pdf', 'doc', 'docx'].includes(extension)) {
       window.alert('Поддерживаются только PDF, DOC и DOCX')
       return
     }
+
     setFile(nextFile)
   }
 
@@ -308,6 +365,7 @@ function NewInstructionView({ onCreate }) {
 
   async function handleCreate() {
     if (!file) return
+
     setSubmitting(true)
     setError('')
 
@@ -340,7 +398,8 @@ function NewInstructionView({ onCreate }) {
         </select>
 
         <UploadCard file={file} setFile={setFile} />
-        {error && <div className="form-error">{error}</div>}
+
+        {error && <div className="form-error upload-error">{error}</div>}
 
         <button
           type="button"
@@ -355,10 +414,9 @@ function NewInstructionView({ onCreate }) {
   )
 }
 
-function ProcessingView({ task, station }) {
+function ProcessingView({ task }) {
   const status = getTaskStatusValue(task)
   const meta = STATUS_META[status] || STATUS_META.CREATED
-  const isFailed = status === 'FAILED'
 
   return (
     <main className="workspace chat-workspace">
@@ -366,7 +424,7 @@ function ProcessingView({ task, station }) {
         <div className="chat-message chat-message-user">
           <div className="chat-avatar">Вы</div>
           <div className="chat-bubble">
-            <strong>Создать инструкцию для станции {station || 'не указана'}</strong>
+            <strong>Создать инструкцию для станции {getTaskStation(task) || 'не указана'}</strong>
             <span className="file-pill">📄 {getTaskFileName(task)}</span>
           </div>
         </div>
@@ -374,10 +432,12 @@ function ProcessingView({ task, station }) {
         <div className="chat-message">
           <div className="chat-avatar system-avatar">AI</div>
           <div className="chat-bubble system-bubble">
-            <strong>{isFailed ? 'Не удалось обработать документ' : 'Обрабатываю технический паспорт'}</strong>
-            <div className={`progress-track ${isFailed ? 'progress-track-error' : ''}`}>
+            <strong>Обрабатываю технический паспорт</strong>
+
+            <div className="progress-track">
               <div className="progress-value" style={{ width: `${meta.progress}%` }} />
             </div>
+
             <div className="progress-row">
               <span>{meta.label}</span>
               <strong>{meta.progress}%</strong>
@@ -396,12 +456,6 @@ function ProcessingView({ task, station }) {
                 </div>
               ))}
             </div>
-
-            {isFailed && (
-              <div className="processing-error">
-                {task.errorMessage || 'Gateway вернул статус FAILED без описания ошибки.'}
-              </div>
-            )}
           </div>
         </div>
       </div>
@@ -409,87 +463,150 @@ function ProcessingView({ task, station }) {
   )
 }
 
-function TaskView({ task, station, onDownload, onRefresh, downloading, refreshing }) {
-  const status = getTaskStatusValue(task)
-  const meta = STATUS_META[status] || STATUS_META.CREATED
-  const completed = status === 'COMPLETED'
-  const failed = status === 'FAILED'
-
+function FailedTaskView({ task, onRefresh, refreshing }) {
   return (
     <main className="workspace task-workspace">
       <header className="editor-header">
         <div>
-          <h1>{taskTitle(task)}</h1>
-          <p>{station || 'Станция не сохранена'} · {getTaskFileName(task)}</p>
+          <h1>{getTaskTitle(task)}</h1>
+          <p>{getTaskStation(task) || 'Станция не указана'} · {getTaskFileName(task)}</p>
         </div>
-
-        <div className="header-actions">
-          <button type="button" className="secondary-button" onClick={onRefresh} disabled={refreshing}>
-            {refreshing ? 'Обновление…' : 'Обновить статус'}
-          </button>
-          <button
-            type="button"
-            className="primary-button"
-            onClick={onDownload}
-            disabled={!completed || downloading}
-          >
-            {downloading ? 'Скачивание…' : 'Скачать PDF'}
-          </button>
-        </div>
+        <button type="button" className="secondary-button" onClick={onRefresh} disabled={refreshing}>
+          {refreshing ? 'Обновление…' : 'Обновить статус'}
+        </button>
       </header>
 
       <section className="task-content">
         <div className="task-hero">
-          <div className={`status-icon ${completed ? 'status-icon-success' : failed ? 'status-icon-error' : ''}`}>
-            {completed ? '✓' : failed ? '!' : '…'}
-          </div>
+          <div className="status-icon status-icon-error">!</div>
           <div>
-            <span className={`status-badge status-${status.toLowerCase()}`}>{meta.label}</span>
-            <h2>
-              {completed
-                ? 'Инструкция готова к скачиванию'
-                : failed
-                  ? 'Обработка завершилась с ошибкой'
-                  : 'Инструкция ещё формируется'}
-            </h2>
-            <p>
-              {completed
-                ? 'Gateway получил итоговый PDF от сервиса сборки.'
-                : failed
-                  ? task.errorMessage || 'Подробности ошибки не переданы.'
-                  : 'Страница автоматически получает актуальный статус задачи.'}
-            </p>
+            <span className="status-badge status-failed">Ошибка</span>
+            <h2>Обработка завершилась с ошибкой</h2>
+            <p>{task.errorMessage || 'Gateway не передал подробности ошибки.'}</p>
           </div>
-        </div>
-
-        <div className="task-grid">
-          <div><span>Файл</span><strong>{getTaskFileName(task)}</strong></div>
-          <div><span>Станция</span><strong>{station || 'Не указана'}</strong></div>
-          <div><span>Статус</span><strong>{status}</strong></div>
-          <div><span>Создана</span><strong>{formatDate(task.createdAt)}</strong></div>
-          <div><span>Обновлена</span><strong>{formatDate(task.updatedAt)}</strong></div>
-          <div><span>ID задачи</span><strong className="task-id">{getTaskId(task)}</strong></div>
         </div>
       </section>
     </main>
   )
 }
 
-function TaskItem({ task, station, active, onOpen, onDelete }) {
+function DataSummary({ instruction, task }) {
+  return (
+    <div className="summary-grid">
+      <div><span>Владелец</span><strong>{instruction.company || 'Не определён'}</strong></div>
+      <div><span>Станция</span><strong>{instruction.station || getTaskStation(task) || 'Не указана'}</strong></div>
+      <div><span>Путь</span><strong>{instruction.pathNumber || 'Не определён'}</strong></div>
+      <div><span>Локомотивы</span><strong>{instruction.locomotives || 'Не определены'}</strong></div>
+      <div className="summary-wide"><span>Примыкание</span><strong>{instruction.connection || 'Не определено'}</strong></div>
+      <div className="summary-wide"><span>Предохранительные устройства</span><strong>{instruction.safety || 'Не определены'}</strong></div>
+    </div>
+  )
+}
+
+function EditorView({
+  task,
+  instruction,
+  loading,
+  error,
+  saveState,
+  exporting,
+  onRetry,
+  onChange,
+  onSave,
+  onExportPdf,
+  onExportDocx,
+}) {
+  const title = getTaskTitle(task, instruction)
+
+  return (
+    <main className="workspace editor-workspace">
+      <header className="editor-header">
+        <div>
+          <h1>{title}</h1>
+          <p>{instruction?.station || getTaskStation(task) || 'Станция не указана'} · {getTaskFileName(task)}</p>
+        </div>
+
+        <div className="header-actions">
+          <button
+            type="button"
+            className="secondary-button"
+            disabled={!instruction || Boolean(exporting)}
+            onClick={onExportPdf}
+          >
+            {exporting === 'pdf' ? 'Формирование…' : 'Скачать PDF'}
+          </button>
+          <button
+            type="button"
+            className="secondary-button"
+            disabled={!instruction || Boolean(exporting)}
+            onClick={onExportDocx}
+          >
+            {exporting === 'docx' ? 'Формирование…' : 'Скачать DOCX'}
+          </button>
+          <button
+            type="button"
+            className="primary-button"
+            disabled={!instruction || saveState === 'saving' || saveState === 'saved'}
+            onClick={onSave}
+          >
+            {saveState === 'saving' ? 'Сохраняем…' : 'Сохранить'}
+          </button>
+        </div>
+      </header>
+
+      <section className="document-area">
+        {loading && <div className="content-loader">Загружаем содержимое инструкции…</div>}
+
+        {!loading && error && (
+          <div className="editor-message editor-message-error">
+            <span>{error}</span>
+            <button type="button" className="secondary-button" onClick={onRetry}>Повторить</button>
+          </div>
+        )}
+
+        {!loading && !error && instruction && (
+          <>
+            <DataSummary instruction={instruction} task={task} />
+
+            <div className="document-toolbar">
+              <strong>Редактор инструкции</strong>
+              <span>
+                {saveState === 'dirty' && 'Есть несохранённые изменения'}
+                {saveState === 'saving' && 'Сохранение…'}
+                {saveState === 'saved' && 'Изменения сохранены'}
+                {saveState === 'idle' && 'Документ загружен из Gateway'}
+              </span>
+            </div>
+
+            <textarea
+              className="document-editor"
+              value={instruction.content}
+              spellCheck="true"
+              onChange={(event) => onChange(event.target.value)}
+            />
+          </>
+        )}
+      </section>
+    </main>
+  )
+}
+
+function TaskItem({ task, active, onOpen, onDelete }) {
   const status = getTaskStatusValue(task)
   const meta = STATUS_META[status] || STATUS_META.CREATED
 
   return (
     <div className={`instruction-item ${active ? 'instruction-item-active' : ''}`}>
       <button type="button" className="instruction-open-button" onClick={onOpen}>
-        <span className="instruction-item-title">{taskTitle(task)}</span>
-        <span className="instruction-item-meta">{station || meta.label}</span>
+        <span className="instruction-item-title">{getTaskTitle(task)}</span>
+        <span className="instruction-item-meta">{getTaskStation(task) || meta.label}</span>
         <span className="instruction-item-date">{formatDate(task.updatedAt || task.createdAt)}</span>
       </button>
+
       <button
         type="button"
         className="instruction-delete-button"
-        aria-label={`Удалить задачу ${taskTitle(task)}`}
+        aria-label={`Удалить задачу ${getTaskTitle(task)}`}
         title="Удалить задачу"
         onClick={onDelete}
       >
@@ -512,7 +629,7 @@ function DeleteTaskModal({ task, onCancel, onConfirm, deleting }) {
         onMouseDown={(event) => event.stopPropagation()}
       >
         <div className="confirm-modal-icon"><TrashIcon /></div>
-        <h2 id="delete-modal-title">Удалить задачу?</h2>
+        <h2 id="delete-modal-title">Удалить инструкцию?</h2>
         <p>Документ «{getTaskFileName(task)}» будет удалён без возможности восстановления.</p>
         <div className="confirm-modal-actions">
           <button type="button" className="secondary-button" onClick={onCancel} disabled={deleting}>
@@ -529,21 +646,33 @@ function DeleteTaskModal({ task, onCancel, onConfirm, deleting }) {
 
 export default function App() {
   const [authenticated, setAuthenticated] = useState(hasSession)
-  const [profile, setProfile] = useState(() => readJson(PROFILE_KEY, {}))
+  const [profile, setProfile] = useState(readProfile)
   const [tasks, setTasks] = useState([])
-  const [stationMap, setStationMap] = useState(() => readJson(STATION_MAP_KEY, {}))
   const [activeId, setActiveId] = useState(null)
-  const [mode, setMode] = useState('new')
+  const [view, setView] = useState('new')
   const [loadingTasks, setLoadingTasks] = useState(false)
   const [loadError, setLoadError] = useState('')
+  const [instruction, setInstruction] = useState(null)
+  const [contentLoading, setContentLoading] = useState(false)
+  const [contentError, setContentError] = useState('')
+  const [saveState, setSaveState] = useState('idle')
   const [deleteTarget, setDeleteTarget] = useState(null)
   const [deleting, setDeleting] = useState(false)
-  const [downloading, setDownloading] = useState(false)
   const [refreshing, setRefreshing] = useState(false)
+  const [exporting, setExporting] = useState('')
+  const pollingInProgress = useRef(false)
 
   const activeTask = useMemo(
     () => tasks.find((task) => getTaskId(task) === activeId) || null,
     [tasks, activeId],
+  )
+
+  const activeTaskIds = useMemo(
+    () => tasks
+      .filter((task) => ACTIVE_STATUSES.has(getTaskStatusValue(task)))
+      .map(getTaskId)
+      .filter(Boolean),
+    [tasks],
   )
 
   const updateTask = useCallback((id, patch) => {
@@ -561,8 +690,10 @@ export default function App() {
       setTasks(nextTasks)
 
       setActiveId((currentId) => {
-        if (currentId && nextTasks.some((task) => getTaskId(task) === currentId)) return currentId
-        return nextTasks[0] ? getTaskId(nextTasks[0]) : null
+        if (currentId && nextTasks.some((task) => getTaskId(task) === currentId)) {
+          return currentId
+        }
+        return null
       })
     } catch (error) {
       if (error.status === 401) {
@@ -575,9 +706,30 @@ export default function App() {
     }
   }, [])
 
+  const loadInstruction = useCallback(async (task) => {
+    if (!task) return
+
+    setContentLoading(true)
+    setContentError('')
+    setInstruction(null)
+    setSaveState('idle')
+
+    try {
+      const response = await getTaskContent(getTaskId(task))
+      setInstruction(normalizeInstructionResponse(response, task))
+    } catch (error) {
+      setContentError(error.message || 'Не удалось загрузить текст инструкции.')
+    } finally {
+      setContentLoading(false)
+    }
+  }, [])
+
   useEffect(() => {
     function handleUnauthorized() {
       setAuthenticated(false)
+      setTasks([])
+      setActiveId(null)
+      setInstruction(null)
     }
 
     window.addEventListener('railway:unauthorized', handleUnauthorized)
@@ -589,57 +741,109 @@ export default function App() {
   }, [authenticated, loadTaskList])
 
   useEffect(() => {
-    localStorage.setItem(STATION_MAP_KEY, JSON.stringify(stationMap))
-  }, [stationMap])
+    if (!authenticated || activeTaskIds.length === 0) return undefined
+
+    async function pollStatuses() {
+      if (pollingInProgress.current) return
+      pollingInProgress.current = true
+
+      try {
+        const updates = await Promise.allSettled(
+          activeTaskIds.map(async (id) => ({ id, response: await getTaskStatus(id) })),
+        )
+
+        updates.forEach((result) => {
+          if (result.status !== 'fulfilled') return
+          const { id, response } = result.value
+          setTasks((current) => current.map((task) => (
+            getTaskId(task) === id ? normalizeStatusResponse(task, response) : task
+          )))
+        })
+      } finally {
+        pollingInProgress.current = false
+      }
+    }
+
+    pollStatuses()
+    const timer = window.setInterval(pollStatuses, POLLING_INTERVAL_MS)
+    return () => window.clearInterval(timer)
+  }, [authenticated, activeTaskIds.join('|')])
 
   useEffect(() => {
-    if (!activeTask) return undefined
-    const status = getTaskStatusValue(activeTask)
-    if (TERMINAL_STATUSES.has(status)) return undefined
+    if (!activeTask || view !== 'task') {
+      setInstruction(null)
+      setContentError('')
+      return
+    }
 
-    const timer = window.setInterval(async () => {
-      try {
-        const response = await getTaskStatus(getTaskId(activeTask))
-        const updated = normalizeStatusResponse(activeTask, response)
-        updateTask(getTaskId(activeTask), updated)
-      } catch (error) {
-        if (error.status !== 401) console.error(error)
-      }
-    }, 2500)
+    if (getTaskStatusValue(activeTask) === 'COMPLETED') {
+      loadInstruction(activeTask)
+    } else {
+      setInstruction(null)
+      setContentError('')
+    }
+  }, [activeId, activeTask?.status, view, loadInstruction])
 
-    return () => window.clearInterval(timer)
-  }, [activeTask, updateTask])
+  useEffect(() => {
+    function handleBeforeUnload(event) {
+      if (saveState !== 'dirty') return
+      event.preventDefault()
+      event.returnValue = ''
+    }
+
+    window.addEventListener('beforeunload', handleBeforeUnload)
+    return () => window.removeEventListener('beforeunload', handleBeforeUnload)
+  }, [saveState])
 
   function handleAuthenticated(nextProfile) {
     saveProfile(nextProfile)
     setProfile(nextProfile)
     setAuthenticated(true)
-    setMode('new')
+    setView('new')
   }
 
   async function handleLogout() {
-    await logout()
-    localStorage.removeItem(PROFILE_KEY)
-    setAuthenticated(false)
-    setProfile({})
-    setTasks([])
-    setActiveId(null)
+    try {
+      await logout()
+    } finally {
+      localStorage.removeItem(PROFILE_KEY)
+      setAuthenticated(false)
+      setProfile({})
+      setTasks([])
+      setActiveId(null)
+      setInstruction(null)
+    }
   }
 
   async function handleCreate({ station, file }) {
     const createdTask = await createTask({ station, file })
     const id = getTaskId(createdTask)
 
-    setStationMap((current) => ({ ...current, [id]: station }))
-    setTasks((current) => [createdTask, ...current.filter((task) => getTaskId(task) !== id)])
+    if (!id) {
+      throw new Error('Gateway не вернул id созданной задачи.')
+    }
+
+    const normalizedTask = {
+      ...createdTask,
+      id,
+      station: getTaskStation(createdTask) || station,
+      originalFileName: getTaskFileName(createdTask) === 'Технический паспорт'
+        ? file.name
+        : getTaskFileName(createdTask),
+    }
+
+    setTasks((current) => [
+      normalizedTask,
+      ...current.filter((task) => getTaskId(task) !== id),
+    ])
     setActiveId(id)
-    setMode('task')
+    setView('task')
   }
 
   async function handleRefreshTask() {
     if (!activeTask) return
-    setRefreshing(true)
 
+    setRefreshing(true)
     try {
       const response = await getTaskStatus(getTaskId(activeTask))
       updateTask(getTaskId(activeTask), normalizeStatusResponse(activeTask, response))
@@ -650,22 +854,75 @@ export default function App() {
     }
   }
 
-  async function handleDownload() {
-    if (!activeTask) return
-    setDownloading(true)
+  function handleInstructionChange(content) {
+    setInstruction((current) => ({ ...current, content }))
+    setSaveState('dirty')
+  }
 
+  async function handleSaveInstruction() {
+    if (!activeTask || !instruction) return
+
+    setSaveState('saving')
     try {
-      const fallback = `${taskTitle(activeTask)}.pdf`
-      await downloadTask(getTaskId(activeTask), fallback)
+      const payload = {
+        content: instruction.content,
+        company: instruction.company || null,
+        station: instruction.station || getTaskStation(activeTask) || null,
+        pathNumber: instruction.pathNumber || null,
+        locomotives: instruction.locomotives || null,
+        connection: instruction.connection || null,
+        boundary: instruction.boundary || null,
+        safety: instruction.safety || null,
+      }
+
+      const response = await saveTaskContent(getTaskId(activeTask), payload)
+      if (response) {
+        setInstruction(normalizeInstructionResponse(response, activeTask))
+      }
+      setSaveState('saved')
     } catch (error) {
-      window.alert(error.message || 'Не удалось скачать PDF.')
+      setSaveState('dirty')
+      window.alert(error.message || 'Не удалось сохранить изменения.')
+    }
+  }
+
+  async function handleExportPdf() {
+    if (!activeTask || !instruction) return
+
+    setExporting('pdf')
+    try {
+      await exportInstructionPdf({
+        content: instruction.content,
+        title: getTaskTitle(activeTask, instruction),
+        station: instruction.station || getTaskStation(activeTask) || 'Станция',
+      })
+    } catch (error) {
+      window.alert(error.message || 'Не удалось сформировать PDF.')
     } finally {
-      setDownloading(false)
+      setExporting('')
+    }
+  }
+
+  async function handleExportDocx() {
+    if (!activeTask || !instruction) return
+
+    setExporting('docx')
+    try {
+      await exportInstructionDocx({
+        content: instruction.content,
+        title: getTaskTitle(activeTask, instruction),
+        station: instruction.station || getTaskStation(activeTask) || 'Станция',
+      })
+    } catch (error) {
+      window.alert(error.message || 'Не удалось сформировать DOCX.')
+    } finally {
+      setExporting('')
     }
   }
 
   async function handleDelete() {
     if (!deleteTarget) return
+
     const id = getTaskId(deleteTarget)
     setDeleting(true)
 
@@ -673,17 +930,12 @@ export default function App() {
       await deleteTask(id)
       const nextTasks = tasks.filter((task) => getTaskId(task) !== id)
       setTasks(nextTasks)
-      setStationMap((current) => {
-        const next = { ...current }
-        delete next[id]
-        return next
-      })
       setDeleteTarget(null)
 
       if (activeId === id) {
-        const fallback = nextTasks[0]
-        setActiveId(fallback ? getTaskId(fallback) : null)
-        setMode(fallback ? 'task' : 'new')
+        setActiveId(null)
+        setView('new')
+        setInstruction(null)
       }
     } catch (error) {
       window.alert(error.message || 'Не удалось удалить задачу.')
@@ -692,10 +944,11 @@ export default function App() {
     }
   }
 
-  if (!authenticated) return <AuthPage onAuthenticated={handleAuthenticated} />
+  if (!authenticated) {
+    return <AuthPage onAuthenticated={handleAuthenticated} />
+  }
 
   const activeStatus = activeTask ? getTaskStatusValue(activeTask) : null
-  const showProcessing = activeTask && !TERMINAL_STATUSES.has(activeStatus)
 
   return (
     <div className="app-shell">
@@ -709,8 +962,10 @@ export default function App() {
           type="button"
           className="new-button"
           onClick={() => {
-            setMode('new')
+            if (saveState === 'dirty' && !window.confirm('Есть несохранённые изменения. Продолжить?')) return
+            setView('new')
             setActiveId(null)
+            setInstruction(null)
           }}
         >
           <span>＋</span> Новая инструкция
@@ -720,25 +975,28 @@ export default function App() {
 
         <div className="instruction-list">
           {loadingTasks && <div className="sidebar-message">Загружаем…</div>}
+
           {!loadingTasks && loadError && (
             <button type="button" className="sidebar-retry" onClick={() => loadTaskList()}>
               {loadError}<br />Повторить
             </button>
           )}
+
           {!loadingTasks && !loadError && tasks.length === 0 && (
             <div className="sidebar-message">Пока нет загруженных документов</div>
           )}
+
           {tasks.map((task) => {
             const id = getTaskId(task)
             return (
               <TaskItem
                 key={id}
                 task={task}
-                station={task.station || stationMap[id]}
-                active={mode === 'task' && activeId === id}
+                active={view === 'task' && activeId === id}
                 onOpen={() => {
+                  if (saveState === 'dirty' && !window.confirm('Есть несохранённые изменения. Продолжить?')) return
                   setActiveId(id)
-                  setMode('task')
+                  setView('task')
                 }}
                 onDelete={() => setDeleteTarget(task)}
               />
@@ -758,27 +1016,37 @@ export default function App() {
         </div>
       </aside>
 
-      {mode === 'new' && <NewInstructionView onCreate={handleCreate} />}
+      {view === 'new' && <NewInstructionView onCreate={handleCreate} />}
 
-      {mode === 'task' && activeTask && showProcessing && (
-        <ProcessingView
-          task={activeTask}
-          station={activeTask.station || stationMap[getTaskId(activeTask)]}
-        />
+      {view === 'task' && activeTask && ACTIVE_STATUSES.has(activeStatus) && (
+        <ProcessingView task={activeTask} />
       )}
 
-      {mode === 'task' && activeTask && !showProcessing && (
-        <TaskView
+      {view === 'task' && activeTask && activeStatus === 'FAILED' && (
+        <FailedTaskView
           task={activeTask}
-          station={activeTask.station || stationMap[getTaskId(activeTask)]}
-          onDownload={handleDownload}
           onRefresh={handleRefreshTask}
-          downloading={downloading}
           refreshing={refreshing}
         />
       )}
 
-      {mode === 'task' && !activeTask && <NewInstructionView onCreate={handleCreate} />}
+      {view === 'task' && activeTask && activeStatus === 'COMPLETED' && (
+        <EditorView
+          task={activeTask}
+          instruction={instruction}
+          loading={contentLoading}
+          error={contentError}
+          saveState={saveState}
+          exporting={exporting}
+          onRetry={() => loadInstruction(activeTask)}
+          onChange={handleInstructionChange}
+          onSave={handleSaveInstruction}
+          onExportPdf={handleExportPdf}
+          onExportDocx={handleExportDocx}
+        />
+      )}
+
+      {view === 'task' && !activeTask && <NewInstructionView onCreate={handleCreate} />}
 
       <DeleteTaskModal
         task={deleteTarget}

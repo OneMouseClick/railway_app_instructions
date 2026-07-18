@@ -1,8 +1,8 @@
 # Авто Инструкция — frontend
 
-React/Vite-фронтенд сервиса генерации железнодорожных инструкций по техническому паспорту.
+Продовый React/Vite-фронтенд сервиса генерации железнодорожных инструкций по техническому паспорту.
 
-Фронтенд обращается только к Gateway. Напрямую с Parser Service, AI Service, Assembler Service, RabbitMQ и MinIO браузер не работает.
+Браузер обращается только к Gateway. Напрямую с Parser Service, AI Service, Assembler Service, RabbitMQ и MinIO фронтенд не работает.
 
 ## Реализовано
 
@@ -10,13 +10,18 @@ React/Vite-фронтенд сервиса генерации железнодо
 - автоматическое обновление access-токена через refresh-токен;
 - выход из аккаунта;
 - загрузка PDF, DOC и DOCX;
-- выбор станции;
+- выбор железнодорожной станции;
 - список задач пользователя;
-- получение статуса задачи каждые 2,5 секунды;
-- отображение этапов обработки;
+- polling всех незавершённых задач каждые 3 секунды;
+- отображение этапов обработки и ошибок;
+- получение и просмотр готовой инструкции;
+- редактирование и сохранение текста через Gateway;
+- экспорт текущей версии инструкции в PDF и DOCX;
 - удаление задачи;
-- скачивание готового PDF;
+- предупреждение о несохранённых изменениях;
 - адаптивный интерфейс.
+
+Моковых задач, локальной генерации и демо-режима нет. Без доступного Gateway приложение показывает ошибку подключения.
 
 ## Структура
 
@@ -32,6 +37,7 @@ frontend/
     ├── api.js
     ├── App.jsx
     ├── constants.js
+    ├── documentExport.js
     ├── main.jsx
     └── styles.css
 ```
@@ -40,55 +46,33 @@ frontend/
 
 - Node.js 18 или новее;
 - npm;
-- запущенный Gateway на `http://localhost:8080`.
-
-Gateway предоставляет:
-
-- `POST /api/v1/auth/register`;
-- `POST /api/v1/auth/login`;
-- `POST /api/v1/auth/refresh`;
-- `POST /api/v1/auth/logout`;
-- `POST /api/v1/tasks`;
-- `GET /api/v1/tasks`;
-- `GET /api/v1/tasks/{id}/status`;
-- `GET /api/v1/tasks/{id}/download`;
-- `DELETE /api/v1/tasks/{id}`.
+- Gateway на `http://localhost:8080` для локальной разработки.
 
 ## Запуск
 
 ```bash
 npm install
+cp .env.example .env
 npm run dev
 ```
 
-Открыть:
-
-```text
-http://localhost:5173
-```
-
-Vite проксирует запросы `/api` на `http://localhost:8080`, поэтому для локальной разработки CORS не мешает работе.
-
-## Переменные окружения
-
-Создать `.env` из примера:
-
-```bash
-cp .env.example .env
-```
-
-Для Windows PowerShell:
+На Windows PowerShell:
 
 ```powershell
 Copy-Item .env.example .env
+npm run dev
 ```
 
-По умолчанию:
+Открыть `http://localhost:5173`.
+
+## Переменные окружения
 
 ```env
 VITE_API_URL=/api
 VITE_GATEWAY_TARGET=http://localhost:8080
 ```
+
+Vite проксирует запросы `/api` на Gateway.
 
 ## Проверка сборки
 
@@ -97,8 +81,51 @@ npm run build
 npm run preview
 ```
 
-## Важное ограничение текущего Gateway
+## Контракт Gateway
 
-На момент подключения `POST /api/v1/tasks` документирован только с multipart-полем `file`. Фронтенд также отправляет поле `station` и сохраняет выбранную станцию локально по `taskId`, но Gateway должен начать сохранять и передавать `station` другим сервисам.
+Авторизация:
 
-Также Gateway пока не предоставляет endpoint с текстом или JSON готовой инструкции. Поэтому редактирование текста в браузере не реализовано: сейчас итог выдаётся как PDF через `/download`.
+- `POST /api/v1/auth/register`;
+- `POST /api/v1/auth/login`;
+- `POST /api/v1/auth/refresh`;
+- `POST /api/v1/auth/logout`.
+
+Задачи:
+
+- `POST /api/v1/tasks` — multipart-поля `file` и `station`;
+- `GET /api/v1/tasks`;
+- `GET /api/v1/tasks/{id}/status`;
+- `GET /api/v1/tasks/{id}/content`;
+- `PUT /api/v1/tasks/{id}/content`;
+- `DELETE /api/v1/tasks/{id}`.
+
+Ожидаемые статусы:
+
+```text
+CREATED
+PARSING
+PARSED
+GENERATING
+GENERATED
+ASSEMBLING
+COMPLETED
+FAILED
+```
+
+### Ответ `GET /api/v1/tasks/{id}/content`
+
+```json
+{
+  "taskId": "uuid",
+  "company": "ООО «Труд»",
+  "station": "Благовещенск",
+  "pathNumber": "без номера",
+  "locomotives": "ТЭМ2, ТЭМ18",
+  "connection": "стрелочным переводом №127 к пути №1",
+  "boundary": "передний стык рамного рельса",
+  "safety": "ручной сбрасывающий башмак БС №24",
+  "content": "ИНСТРУКЦИЯ\n..."
+}
+```
+
+`PUT /api/v1/tasks/{id}/content` принимает эти же редактируемые поля. Backend должен вернуть обновлённый объект либо ответить `204 No Content`.
