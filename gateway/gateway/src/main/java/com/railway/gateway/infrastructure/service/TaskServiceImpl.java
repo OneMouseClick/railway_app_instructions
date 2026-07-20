@@ -11,6 +11,8 @@ import com.railway.gateway.application.validator.FileValidator;
 import com.railway.gateway.domain.entity.Task;
 import com.railway.gateway.domain.entity.User;
 import com.railway.gateway.domain.enums.TaskStatus;
+import com.railway.gateway.domain.event.GeneratedEvent;
+import com.railway.gateway.domain.event.ParsedEvent;
 import com.railway.gateway.domain.event.TaskCreatedEvent;
 import com.railway.gateway.domain.exception.TaskNotFoundException;
 import com.railway.gateway.domain.exception.UserNotFoundException;
@@ -23,6 +25,7 @@ import com.railway.gateway.domain.repository.UserRepository;
 import com.railway.gateway.domain.service.EventPublisher;
 import com.railway.gateway.domain.service.MinioService;
 import com.railway.gateway.domain.valueobject.BucketType;
+import com.railway.gateway.infrastructure.properties.RabbitMqProperties;
 import com.railway.gateway.infrastructure.repository.TaskSpecification;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -54,6 +57,7 @@ public class TaskServiceImpl implements TaskService {
     private final EventPublisher eventPublisher;
     private final FileValidator fileValidator;
     private final TaskMapper taskMapper;
+    private final RabbitMqProperties rabbitMqProperties;
 
     @Override
     @Transactional
@@ -253,6 +257,15 @@ public class TaskServiceImpl implements TaskService {
         taskRepository.save(task);
 
         log.info("Task status updated: taskId={}, oldStatus={}, newStatus=PARSED", taskId, oldStatus);
+
+        // Запускаем следующий этап пайплайна: AI Service
+        ParsedEvent aiWorkEvent = new ParsedEvent(taskId, parsedContentObjectKey);
+        eventPublisher.publishToDocumentExchange(
+                aiWorkEvent,
+                rabbitMqProperties.getRoutingKey().getAiAnalyze()
+        );
+        log.info("Dispatched AI work: taskId={}, routingKey={}", taskId,
+                rabbitMqProperties.getRoutingKey().getAiAnalyze());
     }
 
     @Override
@@ -290,6 +303,15 @@ public class TaskServiceImpl implements TaskService {
         taskRepository.save(task);
 
         log.info("Task status updated: taskId={}, oldStatus={}, newStatus=GENERATED", taskId, oldStatus);
+
+        // Запускаем следующий этап пайплайна: Assembler Service
+        GeneratedEvent assembleWorkEvent = new GeneratedEvent(taskId, generatedInstructionObjectKey);
+        eventPublisher.publishToDocumentExchange(
+                assembleWorkEvent,
+                rabbitMqProperties.getRoutingKey().getAssembleDocument()
+        );
+        log.info("Dispatched Assembler work: taskId={}, routingKey={}", taskId,
+                rabbitMqProperties.getRoutingKey().getAssembleDocument());
     }
 
     @Override

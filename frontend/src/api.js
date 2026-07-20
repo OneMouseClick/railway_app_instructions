@@ -194,11 +194,18 @@ export function getTaskStatus(id) {
 export function createTask({ file, station }) {
   const formData = new FormData()
   formData.append('file', file)
-  formData.append('station', station)
+  // station пока не поддерживается Gateway — отправляем только если есть
+  if (station) formData.append('station', station)
 
   return apiRequest('/v1/tasks', {
     method: 'POST',
     body: formData,
+  })
+}
+
+export function downloadTask(id) {
+  return apiRequest(`/v1/tasks/${encodeURIComponent(id)}/download`, {
+    responseType: 'blob',
   })
 }
 

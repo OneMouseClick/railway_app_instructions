@@ -20,9 +20,15 @@ public class RabbitEventPublisher implements EventPublisher {
 
     @Override
     public void publish(BaseEvent event) {
-        String exchange = determineExchange(event);
-        String routingKey = determineRoutingKey(event);
+        send(determineExchange(event), determineRoutingKey(event), event);
+    }
 
+    @Override
+    public void publishToDocumentExchange(BaseEvent event, String routingKey) {
+        send(rabbitMqProperties.getExchange().getDocument(), routingKey, event);
+    }
+
+    private void send(String exchange, String routingKey, BaseEvent event) {
         if (event.getEventId() == null) {
             event.setEventId(UUID.randomUUID());
         }

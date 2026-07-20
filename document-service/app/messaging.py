@@ -1,0 +1,123 @@
+"""RabbitMQ helpers compatible with Spring Jackson2JsonMessageConverter."""
+
+from __future__ import annotations
+
+import json
+import logging
+import os
+import time
+from datetime import datetime, timezone
+from typing import Any, Callable
+from uuid import uuid4
+
+import pika
+
+log = logging.getLogger(__name__)
+
+TYPE_IDS = {
+    "TASK_CREATED": "com.railway.gateway.domain.event.TaskCreatedEvent",
+    "PARSING_STARTED": "com.railway.gateway.domain.event.ParsingStartedEvent",
+    "PARSED": "com.railway.gateway.domain.event.ParsedEvent",
+    "FAILED": "com.railway.gateway.domain.event.FailedEvent",
+}
+
+
+def _env(name: str, default: str) -> str:
+    return os.getenv(name, default)
+
+
+def rabbit_params() -> pika.ConnectionParameters:
+    return pika.ConnectionParameters(
+        host=_env("RABBITMQ_HOST", "localhost"),
+        port=int(_env("RABBITMQ_PORT", "5672")),
+        virtual_host=_env("RABBITMQ_VHOST", "/"),
+        credentials=pika.PlainCredentials(
+            _env("RABBITMQ_USER", "railway"),
+            _env("RABBITMQ_PASSWORD", "railway_secret"),
+        ),
+        heartbeat=60,
+        blocked_connection_timeout=300,
+    )
+
+
+def connect_with_retry(retries: int = 30, delay: float = 2.0) -> pika.BlockingConnection:
+    last_error: Exception | None = None
+    for attempt in range(1, retries + 1):
+        try:
+            return pika.BlockingConnection(rabbit_params())
+        except Exception as exc:  # noqa: BLE001
+            last_error = exc
+            log.warning("RabbitMQ connect failed (%s/%s): %s", attempt, retries, exc)
+            time.sleep(delay)
+    raise RuntimeError(f"Cannot connect to RabbitMQ: {last_error}")
+
+
+def base_event(event_type: str, task_id: str, **extra: Any) -> dict[str, Any]:
+    payload = {
+        "eventType": event_type,
+        "eventId": str(uuid4()),
+        "correlationId": task_id,
+        "taskId": task_id,
+        "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+    }
+    payload.update(extra)
+    return payload
+
+
+def publish_event(
+    channel: pika.adapters.blocking_connection.BlockingChannel,
+    exchange: str,
+    routing_key: str,
+    event: dict[str, Any],
+) -> None:
+    event_type = event["eventType"]
+    body = json.dumps(event, ensure_ascii=False).encode("utf-8")
+    properties = pika.BasicProperties(
+        content_type="application/json",
+        content_encoding="UTF-8",
+        delivery_mode=2,
+        correlation_id=str(event.get("correlationId") or event.get("taskId")),
+        message_id=str(event.get("eventId")),
+        headers={"__TypeId__": TYPE_IDS.get(event_type, TYPE_IDS["FAILED"])},
+    )
+    channel.basic_publish(
+        exchange=exchange,
+        routing_key=routing_key,
+        body=body,
+        properties=properties,
+    )
+    log.info(
+        "Published %s taskId=%s exchange=%s rk=%s",
+        event_type,
+        event.get("taskId"),
+        exchange,
+        routing_key,
+    )
+
+
+def consume_queue(
+    queue_name: str,
+    handler: Callable[[dict[str, Any]], None],
+) -> None:
+    connection = connect_with_retry()
+    channel = connection.channel()
+    channel.basic_qos(prefetch_count=1)
+
+    def _on_message(ch, method, properties, body):  # noqa: ANN001
+        try:
+            event = json.loads(body.decode("utf-8"))
+            log.info(
+                "Received %s taskId=%s from %s",
+                event.get("eventType"),
+                event.get("taskId"),
+                queue_name,
+            )
+            handler(event)
+            ch.basic_ack(delivery_tag=method.delivery_tag)
+        except Exception:  # noqa: BLE001
+            log.exception("Failed to process message from %s", queue_name)
+            ch.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
+
+    channel.basic_consume(queue=queue_name, on_message_callback=_on_message)
+    log.info("Listening on queue %s", queue_name)
+    channel.start_consuming()

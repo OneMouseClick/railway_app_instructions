@@ -1,39 +1,6 @@
-﻿# Maven
-target/
-!.mvn/wrapper/maven-wrapper.jar
-
-# IDE
-.idea/
-*.iml
-.vscode/
-.settings/
-.project
-.classpath
-
-# OS
-.DS_Store
-Thumbs.db
-
-# Git
-.git/
-.gitignore
-
-# Docker
-.dockerignore
-docker-compose*.yml
-Dockerfile
-
-# Documentation
+﻿**/target/
+.git
+.idea
 *.md
-!README.md
-
-# Environment
-.env
-
-# Logs
-*.log
-logs/
-
-# Temp
-tmp/
-temp/
+test-*.pdf
+test-*.exe

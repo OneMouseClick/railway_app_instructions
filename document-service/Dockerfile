@@ -32,8 +32,7 @@ COPY . .
 # Создаем директории для временных файлов
 RUN mkdir -p /tmp/tp_uploads /tmp/tp_convert
 
-# Открываем порт
+# HTTP API (опционально) + worker по умолчанию
 EXPOSE 8000
 
-# Команда для запуска
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["python", "-m", "app.worker"]

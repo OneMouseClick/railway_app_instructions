@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   createTask,
   deleteTask,
+  downloadTask,
   getTaskContent,
   getTaskStatus,
   getTasks,
@@ -515,6 +516,7 @@ function EditorView({
   onSave,
   onExportPdf,
   onExportDocx,
+  onDownloadResult,
 }) {
   const title = getTaskTitle(task, instruction)
 
@@ -529,11 +531,19 @@ function EditorView({
         <div className="header-actions">
           <button
             type="button"
+            className="primary-button"
+            disabled={Boolean(exporting)}
+            onClick={onDownloadResult}
+          >
+            {exporting === 'result' ? 'Скачивание…' : 'Скачать результат'}
+          </button>
+          <button
+            type="button"
             className="secondary-button"
             disabled={!instruction || Boolean(exporting)}
             onClick={onExportPdf}
           >
-            {exporting === 'pdf' ? 'Формирование…' : 'Скачать PDF'}
+            {exporting === 'pdf' ? 'Формирование…' : 'PDF (локально)'}
           </button>
           <button
             type="button"
@@ -541,11 +551,11 @@ function EditorView({
             disabled={!instruction || Boolean(exporting)}
             onClick={onExportDocx}
           >
-            {exporting === 'docx' ? 'Формирование…' : 'Скачать DOCX'}
+            {exporting === 'docx' ? 'Формирование…' : 'DOCX (локально)'}
           </button>
           <button
             type="button"
-            className="primary-button"
+            className="secondary-button"
             disabled={!instruction || saveState === 'saving' || saveState === 'saved'}
             onClick={onSave}
           >
@@ -561,6 +571,7 @@ function EditorView({
           <div className="editor-message editor-message-error">
             <span>{error}</span>
             <button type="button" className="secondary-button" onClick={onRetry}>Повторить</button>
+            <button type="button" className="primary-button" onClick={onDownloadResult}>Скачать результат из Gateway</button>
           </div>
         )}
 
@@ -718,7 +729,12 @@ export default function App() {
       const response = await getTaskContent(getTaskId(task))
       setInstruction(normalizeInstructionResponse(response, task))
     } catch (error) {
-      setContentError(error.message || 'Не удалось загрузить текст инструкции.')
+      // /content пока нет в Gateway — готовый файл доступен через /download
+      setContentError(
+        error?.status === 404
+          ? 'Редактирование текста пока недоступно. Можно скачать готовый результат из Gateway.'
+          : (error.message || 'Не удалось загрузить текст инструкции.'),
+      )
     } finally {
       setContentLoading(false)
     }
@@ -886,6 +902,33 @@ export default function App() {
     }
   }
 
+  async function handleDownloadResult() {
+    if (!activeTask) return
+
+    setExporting('result')
+    try {
+      const { blob, contentDisposition, contentType } = await downloadTask(getTaskId(activeTask))
+      const url = URL.createObjectURL(blob)
+      const link = document.createElement('a')
+      link.href = url
+
+      let filename = 'station-instruction.pdf'
+      const match = /filename=\"?([^\";]+)\"?/i.exec(contentDisposition || '')
+      if (match?.[1]) filename = match[1]
+      else if ((contentType || '').includes('wordprocessingml')) filename = 'station-instruction.docx'
+
+      link.download = filename
+      document.body.appendChild(link)
+      link.click()
+      link.remove()
+      URL.revokeObjectURL(url)
+    } catch (error) {
+      window.alert(error.message || 'Не удалось скачать результат.')
+    } finally {
+      setExporting('')
+    }
+  }
+
   async function handleExportPdf() {
     if (!activeTask || !instruction) return
 
@@ -1043,6 +1086,7 @@ export default function App() {
           onSave={handleSaveInstruction}
           onExportPdf={handleExportPdf}
           onExportDocx={handleExportDocx}
+          onDownloadResult={handleDownloadResult}
         />
       )}
 

@@ -1,47 +1,6 @@
-# Python
 __pycache__
 *.pyc
-*.pyo
-*.pyd
-.Python
-*.so
-*.egg
-*.egg-info
-dist
-build
-.venv
-venv
-env
-ENV
-
-# Git
-.git
-.gitignore
-.gitattributes
-
-# Файлы документов (чтобы не копировать большие файлы в контейнер)
-*.doc
-*.docx
-*.pdf
-*.json
-
-# IDE
-.vscode
 .idea
-*.swp
-*.swo
-*.iml
-
-# Логи и временные файлы
-*.log
-*.tmp
-*.temp
-
-# Документация
-README.md
+tests/tech_passports
+.git
 *.md
-
-# Тесты и скрипты
-tests/
-my_test.py
-test_pipeline.py

@@ -16,7 +16,19 @@
 
 Ветка `integration` — единая точка для дальнейшей интеграции сервисов через RabbitMQ и MinIO.
 
-## Текущий статус
+## Запуск всей платформы
 
-- Бизнес-логика сервисов собрана в одном репозитории.
-- End-to-end пайплайн (события RabbitMQ + MinIO между сервисами) ещё не связан — следующий этап работы.
+```bash
+docker compose up --build
+```
+
+| Сервис | URL |
+|--------|-----|
+| Frontend | http://localhost:5173 |
+| Gateway API / Swagger | http://localhost:8080/swagger-ui.html |
+| RabbitMQ UI | http://localhost:15672 (`railway` / `railway_secret`) |
+| MinIO UI | http://localhost:9001 (`minioadmin` / `minioadmin`) |
+
+Пайплайн: `POST /api/v1/tasks` → Document → AI (`AI_MOCK=true` по умолчанию) → Assembler → `GET /api/v1/tasks/{id}/download`.
+
+Для реальной генерации через GigaChat: задайте `AI_MOCK=false` и `GIGACHAT_CREDENTIALS`, поднимите Qdrant, пересоберите `ai-service` с `requirements.txt`.

@@ -33,3 +33,5 @@ target/
 *.tmp
 .coverage
 htmlcov/
+e2e-result.pdf
+e2e-result.*
