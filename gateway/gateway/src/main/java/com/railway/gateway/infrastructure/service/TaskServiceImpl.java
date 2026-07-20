@@ -69,10 +69,19 @@ public class TaskServiceImpl implements TaskService {
         User user = userRepository.findById(userId)
                 .orElseThrow(() -> new UserNotFoundException(userId));
 
+        String contentType = file.getContentType();
+        if (contentType == null || contentType.isBlank()) {
+            contentType = "application/octet-stream";
+        }
+        // safety: DB column is VARCHAR(255)
+        if (contentType.length() > 255) {
+            contentType = contentType.substring(0, 255);
+        }
+
         Task task = Task.builder()
                 .user(user)
                 .originalFileName(file.getOriginalFilename())
-                .originalFileType(file.getContentType())
+                .originalFileType(contentType)
                 .status(TaskStatus.CREATED)
                 .minioObjectName("temp")
                 .build();

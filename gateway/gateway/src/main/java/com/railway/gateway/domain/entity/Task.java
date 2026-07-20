@@ -31,7 +31,7 @@ public class Task extends BaseUuidEntity {
     @Column(name = "original_file_name", nullable = false, length = 500)
     private String originalFileName;
 
-    @Column(name = "original_file_type", nullable = false, length = 50)
+    @Column(name = "original_file_type", nullable = false, length = 255)
     private String originalFileType;
 
     @Column(name = "minio_object_name", nullable = false, length = 500)
