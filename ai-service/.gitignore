@@ -1,0 +1,19 @@
+# Environments
+venv/
+env/
+.env
+__pycache__/
+
+# Python cache
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Local data
+reference_docs/
+qdrant_storage/

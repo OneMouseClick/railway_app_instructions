@@ -1,0 +1,1 @@
+ALTER TABLE tasks ALTER COLUMN minio_object_name DROP NOT NULL;

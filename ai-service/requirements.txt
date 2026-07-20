@@ -1,0 +1,13 @@
+fastapi
+uvicorn
+pydantic
+qdrant-client
+langchain
+langchain-core
+langchain-community
+langchain-gigachat>=0.3.0
+langchain-qdrant
+langchain-huggingface
+sentence-transformers
+python-docx
+python-dotenv
