@@ -669,10 +669,11 @@ class InstructionDocxBuilder:
         if table_data.title:
             caption = self.document.add_paragraph()
             caption_run = caption.add_run(table_data.title)
-            caption_run.italic = True
-            caption_run.font.size = Pt(self.template["base_font_size"] - 1)
-            caption.paragraph_format.space_before = Pt(6)
+            caption_run.bold = True
+            caption_run.font.size = Pt(11)
+            caption.paragraph_format.space_before = Pt(10)
             caption.paragraph_format.space_after = Pt(4)
+            caption.paragraph_format.first_line_indent = Cm(0)
 
         n_cols = len(table_data.headers) if table_data.headers else len(table_data.rows[0])
         has_header = bool(table_data.headers)
@@ -681,17 +682,25 @@ class InstructionDocxBuilder:
         table = self.document.add_table(rows=n_rows, cols=n_cols)
         table.style = "Table Grid"
         table.alignment = WD_TABLE_ALIGNMENT.CENTER
-        table.autofit = True
+        table.autofit = False
+
+        # Равномерно делим ширину текстового поля — иначе Word/LibreOffice
+        # ломает длинные шапки по слогам на всю страницу.
+        section = self.document.sections[0]
+        usable_width = section.page_width - section.left_margin - section.right_margin
+        col_width = int(usable_width) // max(n_cols, 1)
+        font_pt = 9 if n_cols >= 6 else 10
 
         row_offset = 0
         if has_header:
             for c, header_text in enumerate(table_data.headers):
                 cell = table.rows[0].cells[c]
+                cell.width = col_width
                 cell.text = ""
                 p = cell.paragraphs[0]
                 run = p.add_run(header_text)
                 run.bold = True
-                run.font.size = Pt(self.template["base_font_size"] - 1)
+                run.font.size = Pt(font_pt)
                 p.alignment = WD_ALIGN_PARAGRAPH.CENTER
                 if shading:
                     run.font.color.rgb = RGBColor.from_string("FFFFFF")
@@ -701,10 +710,11 @@ class InstructionDocxBuilder:
         for r, row_values in enumerate(table_data.rows):
             for c, value in enumerate(row_values):
                 cell = table.rows[r + row_offset].cells[c]
+                cell.width = col_width
                 cell.text = ""
                 p = cell.paragraphs[0]
                 run = p.add_run(value)
-                run.font.size = Pt(self.template["base_font_size"] - 1)
+                run.font.size = Pt(font_pt)
 
         spacer = self.document.add_paragraph()
         spacer.paragraph_format.space_after = Pt(6)

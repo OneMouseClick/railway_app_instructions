@@ -35,21 +35,32 @@ def _map_table_to_section(number: str, title: str) -> str:
 
 
 def _clean_ai_text(text: str) -> str:
-    """Убираем отсылки к таблицам, которых LLM выдумал — реальные таблицы вставим сами."""
+    """Убираем отсылки к таблицам и оборванные хвосты вроде «Согласно ведомости (»."""
     lines = []
     for line in str(text or "").splitlines():
         if _TABLE_REF_RE.match(line.strip()):
             continue
-        # обрезка хвостов вида «... приведено в таблице 2.1.»
         line = re.sub(
             r"\s*(?:см\.?\s*)?таблиц\w*\s+\d+(?:\.\d+)*(?:[^.]*\.)?",
             "",
             line,
             flags=re.IGNORECASE,
         ).strip()
+        # «Согласно ведомости путей (» / «приведено в (»
+        line = re.sub(
+            r"[\s:(,\-–—]*$",
+            "",
+            line,
+        ).strip()
+        if line and not line.endswith((".", ";", ":")):
+            # не трогаем нормальные заголовки вида «1.1. Местоположение»
+            if not re.match(r"^\d+(\.\d+)*\.?\s+\S+", line):
+                pass
         if line:
             lines.append(line)
-    return "\n".join(lines).strip()
+    cleaned = "\n".join(lines).strip()
+    cleaned = re.sub(r"\(\s*$", "", cleaned).strip()
+    return cleaned
 
 
 def _assembler_table(raw: dict[str, Any]) -> dict[str, Any] | None:
