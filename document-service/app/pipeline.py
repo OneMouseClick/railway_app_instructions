@@ -13,6 +13,7 @@ from .converters import detect_format, ensure_docx
 from .extraction.narrative import extract_narrative
 from .extraction.normalize import normalize
 from .extraction.section_mapping import build_instruction_json
+from .extraction.tables import extract_tables
 from .parsers.docx_parser import parse_docx
 from .parsers.pdf_parser import parse_pdf
 
@@ -43,4 +44,6 @@ def parse_tech_passport(path: str, original_filename: str | None = None) -> dict
         result = build_instruction_json(data)
         # Полный текст документа по разделам — для AI / сборки без «заглушек»
         result["source_narrative"] = extract_narrative(raw)
+        # Структурированные таблицы (headers/rows) — для вставки в инструкцию
+        result["source_tables"] = extract_tables(raw)
         return result
