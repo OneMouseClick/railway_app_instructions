@@ -519,6 +519,7 @@ function EditorView({
   onDownloadResult,
 }) {
   const title = getTaskTitle(task, instruction)
+  const downloadOnly = Boolean(instruction?.downloadOnly)
 
   return (
     <main className="workspace editor-workspace">
@@ -537,30 +538,34 @@ function EditorView({
           >
             {exporting === 'result' ? 'Скачивание…' : 'Скачать результат'}
           </button>
-          <button
-            type="button"
-            className="secondary-button"
-            disabled={!instruction || Boolean(exporting)}
-            onClick={onExportPdf}
-          >
-            {exporting === 'pdf' ? 'Формирование…' : 'PDF (локально)'}
-          </button>
-          <button
-            type="button"
-            className="secondary-button"
-            disabled={!instruction || Boolean(exporting)}
-            onClick={onExportDocx}
-          >
-            {exporting === 'docx' ? 'Формирование…' : 'DOCX (локально)'}
-          </button>
-          <button
-            type="button"
-            className="secondary-button"
-            disabled={!instruction || saveState === 'saving' || saveState === 'saved'}
-            onClick={onSave}
-          >
-            {saveState === 'saving' ? 'Сохраняем…' : 'Сохранить'}
-          </button>
+          {!downloadOnly && (
+            <>
+              <button
+                type="button"
+                className="secondary-button"
+                disabled={!instruction || Boolean(exporting)}
+                onClick={onExportPdf}
+              >
+                {exporting === 'pdf' ? 'Формирование…' : 'PDF (локально)'}
+              </button>
+              <button
+                type="button"
+                className="secondary-button"
+                disabled={!instruction || Boolean(exporting)}
+                onClick={onExportDocx}
+              >
+                {exporting === 'docx' ? 'Формирование…' : 'DOCX (локально)'}
+              </button>
+              <button
+                type="button"
+                className="secondary-button"
+                disabled={!instruction || saveState === 'saving' || saveState === 'saved'}
+                onClick={onSave}
+              >
+                {saveState === 'saving' ? 'Сохраняем…' : 'Сохранить'}
+              </button>
+            </>
+          )}
         </div>
       </header>
 
@@ -575,7 +580,20 @@ function EditorView({
           </div>
         )}
 
-        {!loading && !error && instruction && (
+        {!loading && !error && instruction && downloadOnly && (
+          <div className="editor-message">
+            <p><strong>Инструкция собрана успешно.</strong></p>
+            <p>
+              Текст для редактора временно недоступен — скачай готовый PDF кнопкой
+              <strong> «Скачать результат»</strong>.
+            </p>
+            <button type="button" className="primary-button" onClick={onDownloadResult} disabled={Boolean(exporting)}>
+              {exporting === 'result' ? 'Скачивание…' : 'Скачать результат'}
+            </button>
+          </div>
+        )}
+
+        {!loading && !error && instruction && !downloadOnly && (
           <>
             <DataSummary instruction={instruction} task={task} />
 
@@ -725,16 +743,29 @@ export default function App() {
     setInstruction(null)
     setSaveState('idle')
 
+    const taskId = getTaskId(task)
+
     try {
-      const response = await getTaskContent(getTaskId(task))
+      const response = await getTaskContent(taskId)
       setInstruction(normalizeInstructionResponse(response, task))
     } catch (error) {
-      // /content пока нет в Gateway — готовый файл доступен через /download
-      setContentError(
+      const missingContent =
         error?.status === 404
-          ? 'Редактирование текста пока недоступно. Можно скачать готовый результат из Gateway.'
-          : (error.message || 'Не удалось загрузить текст инструкции.'),
-      )
+        || error?.status === 500
+        || /unexpected error|No static resource|\/content/i.test(String(error?.message || ''))
+
+      if (missingContent) {
+        setInstruction({
+          taskId,
+          downloadOnly: true,
+          company: '',
+          station: getTaskStation(task),
+          content: '',
+        })
+        setContentError('')
+      } else {
+        setContentError(error.message || 'Не удалось загрузить текст инструкции.')
+      }
     } finally {
       setContentLoading(false)
     }

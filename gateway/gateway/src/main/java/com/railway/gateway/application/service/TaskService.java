@@ -1,6 +1,8 @@
 package com.railway.gateway.application.service;
 
 import com.railway.gateway.api.dto.CreateTaskResponse;
+import com.railway.gateway.api.dto.TaskContentRequest;
+import com.railway.gateway.api.dto.TaskContentResponse;
 import com.railway.gateway.api.dto.TaskDetailsResponse;
 import com.railway.gateway.api.dto.TaskPageResponse;
 import com.railway.gateway.api.dto.TaskStatusResponse;
@@ -25,6 +27,10 @@ public interface TaskService {
     void deleteTask(UUID userId, UUID taskId);
 
     Resource downloadTask(UUID userId, UUID taskId);
+
+    TaskContentResponse getTaskContent(UUID userId, UUID taskId);
+
+    TaskContentResponse saveTaskContent(UUID userId, UUID taskId, TaskContentRequest request);
 
     void updateStatusToParsing(UUID taskId);
 

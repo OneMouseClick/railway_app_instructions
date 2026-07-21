@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import io
 import json
+import re
 import sys
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -11,10 +12,16 @@ from typing import Any, Optional
 
 from docx import Document
 from docx.enum.text import WD_ALIGN_PARAGRAPH, WD_LINE_SPACING
-from docx.enum.table import WD_TABLE_ALIGNMENT
+from docx.enum.table import WD_CELL_VERTICAL_ALIGNMENT, WD_ROW_HEIGHT_RULE, WD_TABLE_ALIGNMENT
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 from docx.shared import Cm, Pt, RGBColor
+
+# GigaChat часто отдаёт Markdown — в DOCX/PDF это должно стать настоящим форматированием.
+_MD_BOLD_RE = re.compile(r"\*\*(.+?)\*\*")
+_MD_ITALIC_RE = re.compile(r"(?<!\*)\*([^*\n]+)\*(?!\*)")
+_MD_HEADING_RE = re.compile(r"^\s{0,3}(#{1,6})\s+(.*)$")
+_MD_HR_RE = re.compile(r"^\s{0,3}([-*_])\1{2,}\s*$")
 
 
 class DocumentValidationError(ValueError):
@@ -361,8 +368,7 @@ class InstructionDocxBuilder:
         self.document.add_page_break()
 
     def _add_title_page_gost(self) -> None:
-        """Классическая обложка в стиле ГОСТ: чёрный текст, по центру,
-        заголовок вертикально смещён пустыми строками, без цветных акцентов."""
+        """ГОСТ-титул на одной странице: заголовок сверху/по центру, год — в самом низу."""
         title_lines = list(self.template["title_prefix"])
         subject_line = (
             f"{self.data.organization}, примыкающем к железнодорожной станции {self.data.station_name}"
@@ -370,34 +376,108 @@ class InstructionDocxBuilder:
             else f"примыкающем к железнодорожной станции {self.data.station_name}"
         )
 
-        # Верхняя пустая зона для визуального центрирования заголовка на странице
-        for _ in range(12):
-            self.document.add_paragraph()
+        section = self.document.sections[0]
+        # Запас под колонтитул + служебный абзац после таблицы (иначе таблица
+        # выталкивает пустую 2-ю страницу перед контентом).
+        usable_height = (
+            section.page_height - section.top_margin - section.bottom_margin - Cm(2.2)
+        )
+        year_height = Cm(1.6)
+        title_height = usable_height - year_height
+        if int(title_height) < int(Cm(14)):
+            title_height = Cm(14)
 
-        for line in title_lines:
-            p = self.document.add_paragraph()
+        table = self.document.add_table(rows=2, cols=1)
+        table.alignment = WD_TABLE_ALIGNMENT.CENTER
+        table.autofit = True
+
+        top_row, bottom_row = table.rows[0], table.rows[1]
+        top_row.height = title_height
+        top_row.height_rule = WD_ROW_HEIGHT_RULE.EXACTLY
+        bottom_row.height = year_height
+        bottom_row.height_rule = WD_ROW_HEIGHT_RULE.EXACTLY
+
+        top_cell, bottom_cell = top_row.cells[0], bottom_row.cells[0]
+        top_cell.vertical_alignment = WD_CELL_VERTICAL_ALIGNMENT.CENTER
+        bottom_cell.vertical_alignment = WD_CELL_VERTICAL_ALIGNMENT.BOTTOM
+        self._clear_table_borders(table)
+
+        # Заголовок в верхней (высокой) ячейке
+        top_cell.text = ""
+        first_p = top_cell.paragraphs[0]
+        first_p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        run0 = first_p.add_run(title_lines[0] if title_lines else "ИНСТРУКЦИЯ")
+        run0.bold = True
+        run0.font.size = Pt(self.template["title_font_size"])
+
+        for line in title_lines[1:]:
+            p = top_cell.add_paragraph()
             p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            p.paragraph_format.space_after = Pt(2)
             run = p.add_run(line)
             run.bold = True
             run.font.size = Pt(self.template["title_font_size"])
 
-        subj_p = self.document.add_paragraph()
+        subj_p = top_cell.add_paragraph()
         subj_p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        subj_p.paragraph_format.space_before = Pt(12)
         subj_run = subj_p.add_run(subject_line)
         subj_run.bold = True
         subj_run.font.size = Pt(self.template["title_font_size"])
 
-        for _ in range(16):
-            self.document.add_paragraph()
-
+        # Год — нижняя ячейка = низ первой страницы
         gen_date = self._format_date(self.data.generated_at)
         year = gen_date.split(".")[-1] if "." in gen_date else gen_date
-        year_p = self.document.add_paragraph()
+        bottom_cell.text = ""
+        year_p = bottom_cell.paragraphs[0]
         year_p.alignment = WD_ALIGN_PARAGRAPH.CENTER
         year_run = year_p.add_run(f"{year} г")
         year_run.bold = True
         year_run.font.size = Pt(self.template["base_font_size"])
 
+        # Разрыв страницы в служебном абзаце СРАЗУ после таблицы —
+        # без отдельного add_page_break() (он давал пустую страницу).
+        self._page_break_after_table(table)
+
+    @staticmethod
+    def _clear_table_borders(table) -> None:
+        tbl = table._tbl
+        tbl_pr = tbl.tblPr if tbl.tblPr is not None else OxmlElement("w:tblPr")
+        if tbl.tblPr is None:
+            tbl.insert(0, tbl_pr)
+        borders = tbl_pr.find(qn("w:tblBorders"))
+        if borders is not None:
+            tbl_pr.remove(borders)
+        borders = OxmlElement("w:tblBorders")
+        for edge in ("top", "left", "bottom", "right", "insideH", "insideV"):
+            elem = OxmlElement(f"w:{edge}")
+            elem.set(qn("w:val"), "nil")
+            elem.set(qn("w:sz"), "0")
+            elem.set(qn("w:space"), "0")
+            elem.set(qn("w:color"), "auto")
+            borders.append(elem)
+        tbl_pr.append(borders)
+
+    def _page_break_after_table(self, table) -> None:
+        """Ставит page-break в абзац сразу после таблицы (он всегда есть в python-docx)."""
+        from docx.text.paragraph import Paragraph
+
+        tbl = table._tbl
+        next_el = tbl.getnext()
+        if next_el is not None and next_el.tag == qn("w:p"):
+            paragraph = Paragraph(next_el, table._parent)
+            # очистить служебный абзац и оставить только разрыв страницы
+            p_element = paragraph._p
+            for child in list(p_element):
+                if child.tag != qn("w:pPr"):
+                    p_element.remove(child)
+            run = paragraph.add_run()
+            br = OxmlElement("w:br")
+            br.set(qn("w:type"), "page")
+            run._r.append(br)
+            paragraph.paragraph_format.space_before = Pt(0)
+            paragraph.paragraph_format.space_after = Pt(0)
+            return
         self.document.add_page_break()
 
     @staticmethod
@@ -430,18 +510,117 @@ class InstructionDocxBuilder:
             heading.paragraph_format.keep_with_next = True
             self._apply_line_spacing(heading.paragraph_format)
 
-            # Текст может содержать несколько абзацев, разделённых \n\n
-            for block in filter(None, (b.strip() for b in section.text.split("\n\n"))):
-                body = self.document.add_paragraph(block)
-                body.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
-                body.paragraph_format.space_after = Pt(6)
-                indent_cm = self.template["first_line_indent_cm"]
-                if indent_cm:
-                    body.paragraph_format.first_line_indent = Cm(indent_cm)
-                self._apply_line_spacing(body.paragraph_format)
+            self._add_section_body(section.text)
 
             for table in section.tables:
                 self._add_table(table)
+
+    def _add_section_body(self, text: str) -> None:
+        """Пишет тело раздела: Markdown (`**`, `#`/`##`/`###`) → реальное оформление DOCX."""
+        if not text or not text.strip():
+            return
+
+        # Нормализуем: иногда LLM отдаёт литералы \\n или смешивает \\r
+        normalized = (
+            text.replace("\\r\\n", "\n")
+            .replace("\\n", "\n")
+            .replace("\r\n", "\n")
+            .replace("\r", "\n")
+        )
+        # Если почти нет переносов, но есть markdown-заголовки — режем перед ними
+        if normalized.count("\n") < 2 and ("##" in normalized or "**" in normalized):
+            normalized = re.sub(r"\s*(#{1,6}\s+)", r"\n\1", normalized)
+            normalized = re.sub(r"\s+(\*\*\d)", r"\n\1", normalized)
+
+        for raw_line in normalized.split("\n"):
+            line = raw_line.strip()
+            if not line or _MD_HR_RE.match(line):
+                continue
+
+            # Убрать ведущие markdown-заголовки даже если после # нет «чистого» match
+            heading = _MD_HEADING_RE.match(line)
+            if heading:
+                self._add_inline_heading(heading.group(2).strip(), level=len(heading.group(1)))
+                continue
+            if line.startswith("#"):
+                line = re.sub(r"^#{1,6}\s*", "", line).strip()
+                if line:
+                    self._add_inline_heading(line, level=3)
+                continue
+
+            only_bold = _MD_BOLD_RE.fullmatch(line)
+            if only_bold:
+                self._add_inline_heading(only_bold.group(1).strip(), level=3)
+                continue
+
+            self._add_body_paragraph(line)
+
+    def _add_inline_heading(self, title: str, level: int = 2) -> None:
+        title = _MD_BOLD_RE.sub(r"\1", title).strip()
+        if not title:
+            return
+        p = self.document.add_paragraph()
+        p.alignment = WD_ALIGN_PARAGRAPH.LEFT
+        p.paragraph_format.space_before = Pt(10 if level <= 2 else 8)
+        p.paragraph_format.space_after = Pt(4)
+        p.paragraph_format.first_line_indent = Cm(0)
+        p.paragraph_format.keep_with_next = True
+        self._apply_line_spacing(p.paragraph_format)
+        run = p.add_run(title)
+        run.bold = True
+        size = self.template["heading_font_size"] if level <= 2 else self.template["base_font_size"]
+        run.font.size = Pt(size)
+
+    def _add_body_paragraph(self, text: str) -> None:
+        cleaned = "\n".join(
+            _MD_HEADING_RE.sub(lambda m: m.group(2), line) if _MD_HEADING_RE.match(line) else line
+            for line in text.split("\n")
+        ).strip()
+        # Страховка: одиночные # в начале строки
+        cleaned = re.sub(r"^#{1,6}\s+", "", cleaned).strip()
+        if not cleaned:
+            return
+
+        p = self.document.add_paragraph()
+        p.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
+        p.paragraph_format.space_after = Pt(6)
+        indent_cm = self.template["first_line_indent_cm"]
+        if indent_cm:
+            p.paragraph_format.first_line_indent = Cm(indent_cm)
+        self._apply_line_spacing(p.paragraph_format)
+        self._append_markdown_runs(p, cleaned)
+        # Если после парсера в абзаце всё ещё остались ** — вычистить runs
+        for run in p.runs:
+            if run.text and ("**" in run.text or run.text.startswith("#")):
+                run.text = run.text.replace("**", "").lstrip("#").strip()
+
+    @staticmethod
+    def _append_markdown_runs(paragraph, text: str) -> None:
+        """Разбивает текст на runs: **bold** и *italic*, маркеры в документ не попадают."""
+        # Сначала bold, внутри/рядом — italic на оставшихся кусках
+        pos = 0
+        for match in _MD_BOLD_RE.finditer(text):
+            if match.start() > pos:
+                InstructionDocxBuilder._append_italic_runs(paragraph, text[pos:match.start()])
+            run = paragraph.add_run(match.group(1))
+            run.bold = True
+            pos = match.end()
+        if pos < len(text):
+            InstructionDocxBuilder._append_italic_runs(paragraph, text[pos:])
+
+    @staticmethod
+    def _append_italic_runs(paragraph, text: str) -> None:
+        if not text:
+            return
+        pos = 0
+        for match in _MD_ITALIC_RE.finditer(text):
+            if match.start() > pos:
+                paragraph.add_run(text[pos:match.start()])
+            run = paragraph.add_run(match.group(1))
+            run.italic = True
+            pos = match.end()
+        if pos < len(text):
+            paragraph.add_run(text[pos:])
 
     def _apply_line_spacing(self, paragraph_format) -> None:
         """Точный интервал (в пунктах) из шаблона, либо множитель 1.15 по умолчанию."""

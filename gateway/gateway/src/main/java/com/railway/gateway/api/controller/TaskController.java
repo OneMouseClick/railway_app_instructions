@@ -2,6 +2,8 @@ package com.railway.gateway.api.controller;
 
 import com.railway.gateway.api.dto.CreateTaskResponse;
 import com.railway.gateway.api.dto.ErrorResponse;
+import com.railway.gateway.api.dto.TaskContentRequest;
+import com.railway.gateway.api.dto.TaskContentResponse;
 import com.railway.gateway.api.dto.TaskDetailsResponse;
 import com.railway.gateway.api.dto.TaskPageResponse;
 import com.railway.gateway.api.dto.TaskStatusResponse;
@@ -18,6 +20,7 @@ import io.swagger.v3.oas.annotations.responses.ApiResponse;
 import io.swagger.v3.oas.annotations.responses.ApiResponses;
 import io.swagger.v3.oas.annotations.security.SecurityRequirement;
 import io.swagger.v3.oas.annotations.tags.Tag;
+import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.springframework.core.io.Resource;
 import org.springframework.http.HttpHeaders;
@@ -29,6 +32,8 @@ import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.PutMapping;
+import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.ResponseStatus;
@@ -182,5 +187,44 @@ public class TaskController {
                 .header(HttpHeaders.CONTENT_DISPOSITION,
                         "attachment; filename=\"station-instruction.pdf\"")
                 .body(resource);
+    }
+
+    @GetMapping("/{id}/content")
+    @Operation(summary = "Get generated instruction text",
+            description = "Returns plain-text instruction assembled from generated-json in MinIO.")
+    @ApiResponses(value = {
+            @ApiResponse(responseCode = "200", description = "Content loaded",
+                    content = @Content(schema = @Schema(implementation = TaskContentResponse.class))),
+            @ApiResponse(responseCode = "401", description = "Unauthorized",
+                    content = @Content(schema = @Schema(implementation = ErrorResponse.class))),
+            @ApiResponse(responseCode = "404", description = "Task or generated JSON not found",
+                    content = @Content(schema = @Schema(implementation = ErrorResponse.class))),
+            @ApiResponse(responseCode = "409", description = "Instruction is not generated yet",
+                    content = @Content(schema = @Schema(implementation = ErrorResponse.class)))
+    })
+    public TaskContentResponse getTaskContent(
+            @AuthenticationPrincipal SecurityUser securityUser,
+            @PathVariable("id") UUID id) {
+        return taskService.getTaskContent(securityUser.getId(), id);
+    }
+
+    @PutMapping(value = "/{id}/content", consumes = MediaType.APPLICATION_JSON_VALUE)
+    @Operation(summary = "Save edited instruction text",
+            description = "Updates generated-json in MinIO. Does not rebuild PDF automatically.")
+    @ApiResponses(value = {
+            @ApiResponse(responseCode = "200", description = "Content saved",
+                    content = @Content(schema = @Schema(implementation = TaskContentResponse.class))),
+            @ApiResponse(responseCode = "401", description = "Unauthorized",
+                    content = @Content(schema = @Schema(implementation = ErrorResponse.class))),
+            @ApiResponse(responseCode = "404", description = "Task or generated JSON not found",
+                    content = @Content(schema = @Schema(implementation = ErrorResponse.class))),
+            @ApiResponse(responseCode = "409", description = "Instruction is not generated yet",
+                    content = @Content(schema = @Schema(implementation = ErrorResponse.class)))
+    })
+    public TaskContentResponse saveTaskContent(
+            @AuthenticationPrincipal SecurityUser securityUser,
+            @PathVariable("id") UUID id,
+            @Valid @RequestBody TaskContentRequest request) {
+        return taskService.saveTaskContent(securityUser.getId(), id, request);
     }
 }

@@ -1,6 +1,12 @@
 package com.railway.gateway.infrastructure.service;
 
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ArrayNode;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.railway.gateway.api.dto.CreateTaskResponse;
+import com.railway.gateway.api.dto.TaskContentRequest;
+import com.railway.gateway.api.dto.TaskContentResponse;
 import com.railway.gateway.api.dto.TaskDetailsResponse;
 import com.railway.gateway.api.dto.TaskPageResponse;
 import com.railway.gateway.api.dto.TaskStatusResponse;
@@ -18,6 +24,7 @@ import com.railway.gateway.domain.exception.TaskNotFoundException;
 import com.railway.gateway.domain.exception.UserNotFoundException;
 import com.railway.gateway.domain.exception.application.ResultFileNotFoundException;
 import com.railway.gateway.domain.exception.application.TaskNotCompletedException;
+import com.railway.gateway.domain.exception.infrastructure.FileDownloadException;
 import com.railway.gateway.domain.exception.infrastructure.FileUploadException;
 import com.railway.gateway.domain.exception.infrastructure.ObjectNotFoundException;
 import com.railway.gateway.domain.repository.TaskRepository;
@@ -40,16 +47,27 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.multipart.MultipartFile;
 
+import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.nio.charset.StandardCharsets;
 import java.time.LocalDateTime;
+import java.util.ArrayList;
+import java.util.EnumSet;
 import java.util.List;
+import java.util.Set;
 import java.util.UUID;
 
 @Slf4j
 @Service
 @RequiredArgsConstructor
 public class TaskServiceImpl implements TaskService {
+
+    private static final Set<TaskStatus> CONTENT_READY_STATUSES = EnumSet.of(
+            TaskStatus.GENERATED,
+            TaskStatus.ASSEMBLING,
+            TaskStatus.COMPLETED
+    );
 
     private final TaskRepository taskRepository;
     private final UserRepository userRepository;
@@ -58,6 +76,7 @@ public class TaskServiceImpl implements TaskService {
     private final FileValidator fileValidator;
     private final TaskMapper taskMapper;
     private final RabbitMqProperties rabbitMqProperties;
+    private final ObjectMapper objectMapper;
 
     @Override
     @Transactional
@@ -229,6 +248,109 @@ public class TaskServiceImpl implements TaskService {
         } catch (ObjectNotFoundException e) {
             throw new ResultFileNotFoundException(taskId, e);
         }
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public TaskContentResponse getTaskContent(UUID userId, UUID taskId) {
+        log.info("Getting task content: taskId={}, userId={}", taskId, userId);
+        Task task = requireTaskWithGeneratedJson(userId, taskId);
+        return readContentFromGeneratedJson(task);
+    }
+
+    @Override
+    @Transactional
+    public TaskContentResponse saveTaskContent(UUID userId, UUID taskId, TaskContentRequest request) {
+        log.info("Saving task content: taskId={}, userId={}", taskId, userId);
+        Task task = requireTaskWithGeneratedJson(userId, taskId);
+        String key = task.getGeneratedInstructionObjectKey();
+
+        try (InputStream inputStream = minioService.download(BucketType.GENERATED_JSON, key)) {
+            ObjectNode root = (ObjectNode) objectMapper.readTree(inputStream);
+            ArrayNode sections = objectMapper.createArrayNode();
+            ObjectNode section = objectMapper.createObjectNode();
+            section.put("id", "0001");
+            section.put("order", 1);
+            section.put("title", "Инструкция");
+            section.put("text", request.content());
+            sections.add(section);
+            root.set("sections", sections);
+
+            byte[] bytes = objectMapper.writerWithDefaultPrettyPrinter().writeValueAsBytes(root);
+            minioService.upload(
+                    BucketType.GENERATED_JSON,
+                    key,
+                    new ByteArrayInputStream(bytes),
+                    bytes.length,
+                    "application/json"
+            );
+            log.info("Task content saved: taskId={}, bytes={}", taskId, bytes.length);
+            return new TaskContentResponse(
+                    taskId,
+                    request.content(),
+                    textOrEmpty(root, "station_name"),
+                    textOrEmpty(root, "organization"),
+                    textOrEmpty(root, "region")
+            );
+        } catch (ObjectNotFoundException e) {
+            throw new ResultFileNotFoundException(taskId, e);
+        } catch (IOException e) {
+            throw new FileDownloadException(BucketType.GENERATED_JSON, key, e);
+        }
+    }
+
+    private Task requireTaskWithGeneratedJson(UUID userId, UUID taskId) {
+        Task task = taskRepository.findByIdAndUserId(taskId, userId)
+                .orElseThrow(() -> new TaskNotFoundException(taskId, userId));
+
+        if (!CONTENT_READY_STATUSES.contains(task.getStatus())) {
+            throw new TaskNotCompletedException(taskId, task.getStatus());
+        }
+        if (task.getGeneratedInstructionObjectKey() == null || task.getGeneratedInstructionObjectKey().isBlank()) {
+            throw new ResultFileNotFoundException(taskId);
+        }
+        return task;
+    }
+
+    private TaskContentResponse readContentFromGeneratedJson(Task task) {
+        String key = task.getGeneratedInstructionObjectKey();
+        try (InputStream inputStream = minioService.download(BucketType.GENERATED_JSON, key)) {
+            JsonNode root = objectMapper.readTree(inputStream);
+            List<String> parts = new ArrayList<>();
+            JsonNode sections = root.path("sections");
+            if (sections.isArray()) {
+                for (JsonNode section : sections) {
+                    String title = section.path("title").asText("").trim();
+                    String text = section.path("text").asText("").trim();
+                    if (!title.isEmpty()) {
+                        parts.add(title);
+                    }
+                    if (!text.isEmpty()) {
+                        parts.add(text);
+                    }
+                }
+            }
+            String content = String.join("\n\n", parts).trim();
+            if (content.isEmpty()) {
+                content = objectMapper.writerWithDefaultPrettyPrinter().writeValueAsString(root);
+            }
+            return new TaskContentResponse(
+                    task.getId(),
+                    content,
+                    textOrEmpty(root, "station_name"),
+                    textOrEmpty(root, "organization"),
+                    textOrEmpty(root, "region")
+            );
+        } catch (ObjectNotFoundException e) {
+            throw new ResultFileNotFoundException(task.getId(), e);
+        } catch (IOException e) {
+            throw new FileDownloadException(BucketType.GENERATED_JSON, key, e);
+        }
+    }
+
+    private static String textOrEmpty(JsonNode root, String field) {
+        JsonNode node = root.get(field);
+        return node == null || node.isNull() ? "" : node.asText("");
     }
 
     @Override

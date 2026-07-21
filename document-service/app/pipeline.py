@@ -10,6 +10,7 @@ import tempfile
 from pathlib import Path
 
 from .converters import detect_format, ensure_docx
+from .extraction.narrative import extract_narrative
 from .extraction.normalize import normalize
 from .extraction.section_mapping import build_instruction_json
 from .parsers.docx_parser import parse_docx
@@ -39,4 +40,7 @@ def parse_tech_passport(path: str, original_filename: str | None = None) -> dict
             raise ValueError(f"Неожиданный формат: {fmt}")
 
         data = normalize(raw, source_file=display_name, source_format=source_format)
-        return build_instruction_json(data)
+        result = build_instruction_json(data)
+        # Полный текст документа по разделам — для AI / сборки без «заглушек»
+        result["source_narrative"] = extract_narrative(raw)
+        return result
