@@ -15,7 +15,6 @@ import {
 import {
   ACTIVE_STATUSES,
   PROCESSING_STEPS,
-  STATIONS,
   STATUS_META,
 } from './constants'
 import { exportInstructionDocx, exportInstructionPdf } from './documentExport'
@@ -359,19 +358,24 @@ function UploadCard({ file, setFile }) {
 }
 
 function NewInstructionView({ onCreate }) {
-  const [station, setStation] = useState(STATIONS[0])
+  const [station, setStation] = useState('')
   const [file, setFile] = useState(null)
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState('')
 
   async function handleCreate() {
+    if (!station.trim()) {
+      setError('Введите название станции.')
+      return
+    }
+
     if (!file) return
 
     setSubmitting(true)
     setError('')
 
     try {
-      await onCreate({ station, file })
+      await onCreate({ station: station.trim(), file })
     } catch (requestError) {
       setError(requestError.message || 'Не удалось загрузить документ.')
       setSubmitting(false)
@@ -382,21 +386,22 @@ function NewInstructionView({ onCreate }) {
     <main className="workspace center-workspace">
       <section className="new-card">
         <h1>Создайте инструкцию по техническому паспорту</h1>
-        <p className="lead">Выберите станцию и загрузите паспорт железнодорожного пути.</p>
+        <p className="lead">Введите станцию и загрузите паспорт железнодорожного пути.</p>
 
         <label className="field-label" htmlFor="station">
           Железнодорожная станция
         </label>
-        <select
+        <input
           id="station"
+          type="text"
           className="select"
           value={station}
-          onChange={(event) => setStation(event.target.value)}
-        >
-          {STATIONS.map((item) => (
-            <option key={item} value={item}>{item}</option>
-          ))}
-        </select>
+          onChange={(event) => {
+            setStation(event.target.value)
+            if (error) setError('')
+          }}
+          placeholder="Введите название станции"
+        />
 
         <UploadCard file={file} setFile={setFile} />
 
@@ -405,7 +410,7 @@ function NewInstructionView({ onCreate }) {
         <button
           type="button"
           className="primary-button wide-button"
-          disabled={!file || submitting}
+          disabled={!file || !station.trim() || submitting}
           onClick={handleCreate}
         >
           {submitting ? 'Загружаем…' : 'Создать инструкцию'}
